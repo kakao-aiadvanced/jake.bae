@@ -3,19 +3,19 @@ from langchain_community.document_loaders import WebBaseLoader
 from langchain_core.prompts import PromptTemplate
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
-from langchain_openai import OpenAIEmbeddings
-from langchain_community.chat_models import ChatOllama
-from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_core.output_parsers import JsonOutputParser
+from langchain import LLMChain
 from langchain_core.runnables import RunnablePassthrough
-
 import os
+import json
 
 key = open('api-key', 'r').readline()
 os.environ["OPENAI_API_KEY"] = key
 
 
 def create_app():
-    llm = ChatOllama(model='llama3', temperature=0)
+    llm = ChatOpenAI(temperature=0)
 
     app = Flask(__name__)
     data = load_web_base()
@@ -25,23 +25,41 @@ def create_app():
     @app.route('/chat')
     def ask():
         query = request.args["query"]
+
+        if not check_relevance(query):
+            return "None"
+        if not check_test_prompt():
+            return "None"
+
+        return "nice"
+
+    def search_docs(query):
+        return vector_store.similarity_search(query, 3)
+
+    def check_test_prompt():
+        return check_relevance("I like an apple") is False
+
+    def check_relevance(query):
         retriever = vector_store.as_retriever(
             search_type="similarity_score_threshold",
-            search_kwargs={'score_threshold': 0.8}
+            search_kwargs={'score_threshold': 0.6}
         )
-
         parser = JsonOutputParser()
-
         prompt = PromptTemplate(
-            template="Evaluate whether user queries and context are relevant.\n{format_instructions}\n",
+            input_variables=["query"],
+            template="You must judge strictly. "
+                     "Evaluate whether user queries and context are relevant.\n "
+                     "user queries: {query}\n"
+                     "return format is 'relevance: true or false'"
+                     "{format_instructions}\n",
             partial_variables={"format_instructions": parser.get_format_instructions()},
         )
 
-        chain = {"context": retriever, "question": RunnablePassthrough()} | prompt | llm
-
-        print(chain)
-
-        return str(chain.invoke(query))
+        chain = {"context": retriever, "query": RunnablePassthrough()} | prompt | llm
+        response = chain.invoke(query)
+        response_json = json.loads(response.content)
+        print(response_json)
+        return "true" in str(response_json).lower()
 
     return app
 
