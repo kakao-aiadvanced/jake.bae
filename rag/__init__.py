@@ -5,8 +5,6 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_core.output_parsers import JsonOutputParser
-from langchain import LLMChain
-from langchain_core.runnables import RunnablePassthrough
 import os
 import json
 
@@ -15,7 +13,7 @@ os.environ["OPENAI_API_KEY"] = key
 
 
 def create_app():
-    llm = ChatOpenAI(temperature=0)
+    llm = ChatOpenAI(model="gpt-4o", temperature=0)
 
     app = Flask(__name__)
     data = load_web_base()
@@ -25,41 +23,51 @@ def create_app():
     @app.route('/chat')
     def ask():
         query = request.args["query"]
+        documents = search_docs(query)
+        state = {"query": query, "documents": documents}
 
-        if not check_relevance(query):
-            return "None"
-        if not check_test_prompt():
-            return "None"
+        retry_count = 0
+        (doc, retry_count) = check_relevance_and_retry(state, retry_count)
 
-        return "nice"
+        if doc is None:
+            return str(None)
+
+        if check_test_relevance("I like an apple", doc) is False:
+            return str(None)
+
+        return str(doc)
 
     def search_docs(query):
         return vector_store.similarity_search(query, 3)
 
-    def check_test_prompt():
-        return check_relevance("I like an apple") is False
+    def check_test_relevance(query, document):
+        return check_relevance(query, document) is False
 
-    def check_relevance(query):
-        retriever = vector_store.as_retriever(
-            search_type="similarity_score_threshold",
-            search_kwargs={'score_threshold': 0.6}
-        )
-        parser = JsonOutputParser()
+    def check_relevance_and_retry(state, retry_count):
+        while retry_count < 3:
+            if check_relevance(state["query"], state["documents"][retry_count]):
+                return state["documents"][retry_count], retry_count
+            retry_count += 1
+
+        return None, retry_count
+
+    def check_relevance(query, doc):
         prompt = PromptTemplate(
-            input_variables=["query"],
-            template="You must judge strictly. "
-                     "Evaluate whether user queries and context are relevant.\n "
-                     "user queries: {query}\n"
-                     "return format is 'relevance: true or false'"
-                     "{format_instructions}\n",
-            partial_variables={"format_instructions": parser.get_format_instructions()},
+            input_variables=["query", "document"],
+            template="""You must judge strictly. 
+                     Evaluate whether user query and document are relevant. 
+                     document" {document}
+                     user query: {query}
+                     return format is 'relevance: true' or 'relevance false'
+                     {format_instructions}
+                     """,
+            partial_variables={"format_instructions": JsonOutputParser().get_format_instructions()}
         )
 
-        chain = {"context": retriever, "query": RunnablePassthrough()} | prompt | llm
-        response = chain.invoke(query)
-        response_json = json.loads(response.content)
-        print(response_json)
-        return "true" in str(response_json).lower()
+        chain = prompt | llm | JsonOutputParser()
+        response = chain.invoke({"document": doc, "query": query})
+        print(response)
+        return "true" in str(response).lower()
 
     return app
 
