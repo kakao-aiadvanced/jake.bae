@@ -25,42 +25,28 @@ def create_app():
     @app.route('/chat')
     def ask():
         query = request.args["query"]
-        documents = search_docs(query)
-        state = {"query": query, "documents": documents}
+        docs = search_docs(query)
 
-        retry_count = 0
-        (doc, retry_count) = check_relevance_and_retry(state, retry_count)
-
-        if doc is None:
-            search_content = web_search(query)
-            return make_answer(query, search_content, False)
-
-        if check_test_relevance("I like an apple", doc) is False:
-            search_content = web_search(query)
-            return make_answer(query, search_content, False)
-
-        answer = make_answer(query, doc)
-
-        if check_hallucination(answer, doc):
-            answer = make_answer(query, doc, False)
+        answer = gpt_answer(query, docs)
 
         return str(answer)
 
     def search_docs(query):
         return vector_store.similarity_search(query, 3)
 
-    def check_test_relevance(query, document):
-        return check_relevance(query, document) is False
+    def gpt_answer(query, doc):
+        return check_relevance(query, doc)
 
-    def check_relevance_and_retry(state, retry_count):
-        while retry_count < 3:
-            if check_relevance(state["query"], state["documents"][retry_count]):
-                return state["documents"][retry_count], retry_count
-            retry_count += 1
+    def check_test_relevance(query, doc, is_web_search=False):
+        if check_relevance("I like an apple", doc, True) is False:
+            return make_answer(query, doc)
+        else:
+            if is_web_search is False:
+                return web_search(query)
+            else:
+                return "no Result for you"
 
-        return None, retry_count
-
-    def check_relevance(query, doc):
+    def check_relevance(query, doc, is_test = False, is_web_search = False):
         prompt = PromptTemplate(
             input_variables=["query", "document"],
             template="""You must judge strictly. 
@@ -75,8 +61,19 @@ def create_app():
 
         chain = prompt | llm | JsonOutputParser()
         response = chain.invoke({"document": doc, "query": query})
-        print(response)
-        return "true" in str(response).lower()
+
+        print("is_test: "+str(is_test)+"  "+str(response))
+
+        if is_test:
+            return "true" in str(response).lower()
+
+        if "true" in str(response).lower():
+            return check_test_relevance(query, doc, is_web_search= is_web_search)
+        else:
+            if is_web_search is False:
+                return web_search(query)
+            else:
+                return "no Result for you"
 
     def make_answer(query, doc, hallucination=True):
         hallucination_remove = ""
@@ -95,7 +92,9 @@ def create_app():
 
         chain = prompt | llm | StrOutputParser()
         response = chain.invoke({"document": doc, "query": query})
-        print(response)
+
+        if check_hallucination(response, doc):
+            return make_answer(query, doc, False)
         return response
 
     def check_hallucination(answer, doc):
@@ -116,8 +115,10 @@ def create_app():
         return "true" in str(response).lower()
 
     def web_search(query):
-        web_search_tool = TavilySearchResults(k=1)
-        return web_search_tool.invoke({"query": query})[0]
+        web_search_tool = TavilySearchResults(k=3)
+        search_result = web_search_tool.invoke({"query": query})[0: 2]
+        print("use web search")
+        return check_relevance(query, search_result, is_web_search= True)
 
     return app
 
