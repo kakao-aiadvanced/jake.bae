@@ -4,12 +4,14 @@ from langchain_core.prompts import PromptTemplate
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
-from langchain_core.output_parsers import JsonOutputParser
+from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 import os
-import json
+from langchain_community.tools.tavily_search import TavilySearchResults
 
-key = open('api-key', 'r').readline()
-os.environ["OPENAI_API_KEY"] = key
+api_key = open('api-key', 'r').readline()
+tavily_key = open('tavily-key', 'r').readline()
+os.environ["OPENAI_API_KEY"] = api_key
+os.environ["TAVILY_API_KEY"] = tavily_key
 
 
 def create_app():
@@ -30,12 +32,17 @@ def create_app():
         (doc, retry_count) = check_relevance_and_retry(state, retry_count)
 
         if doc is None:
-            return str(None)
+            return web_search(query)
 
         if check_test_relevance("I like an apple", doc) is False:
-            return str(None)
+            return web_search(query)
 
-        return str(doc)
+        answer = make_answer(query, doc)
+
+        if check_hallucination(answer, doc):
+            answer = make_answer(query, doc, False)
+
+        return str(answer)
 
     def search_docs(query):
         return vector_store.similarity_search(query, 3)
@@ -68,6 +75,47 @@ def create_app():
         response = chain.invoke({"document": doc, "query": query})
         print(response)
         return "true" in str(response).lower()
+
+    def make_answer(query, doc, hallucination=True):
+        hallucination_remove = ""
+        if hallucination is False:
+            hallucination_remove = "don't make hallucination answer "
+
+        prompt = PromptTemplate(
+            input_variables=["query", "document"],
+            template="""You are instructor. 
+                        Explain the user’s question in detail using the relevant document. 
+                        And describe the source of the document, including the URL and title.
+                        user's question: {query}
+                        document: {document}\n
+                     """ + hallucination_remove
+        )
+
+        chain = prompt | llm | StrOutputParser()
+        response = chain.invoke({"document": doc, "query": query})
+        print(response)
+        return response
+
+    def check_hallucination(answer, doc):
+        prompt = PromptTemplate(
+            input_variables=["query", "document"],
+            template="""Check whether the answer contains hallucinated information by comparing it with the document.
+                     answer: {answer}
+                     document: {document}
+                     return format is 'hallucination: true' or 'hallucination false'
+                     {format_instructions}
+                     """,
+            partial_variables={"format_instructions": JsonOutputParser().get_format_instructions()}
+        )
+
+        chain = prompt | llm | JsonOutputParser()
+        response = chain.invoke({"document": doc, "answer": answer})
+        print(response)
+        return "true" in str(response).lower()
+
+    def web_search(query):
+        web_search_tool = TavilySearchResults(k=1)
+        return web_search_tool.invoke({"query": query})
 
     return app
 
