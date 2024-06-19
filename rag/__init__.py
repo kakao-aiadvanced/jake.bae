@@ -1,5 +1,6 @@
 from flask import Flask, request
 from langchain_community.document_loaders import WebBaseLoader
+from langchain_core.documents import Document
 from langchain_core.prompts import PromptTemplate
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
@@ -21,15 +22,34 @@ def create_app():
     data = load_web_base()
     docs = make_docs_by_chunk_data(data)
     vector_store = make_vector_store(docs)
+    user_data = []
 
-    @app.route('/chat')
+    @app.route('/interest', methods=['GET'])
+    def find_interest():
+
+        prompt = PromptTemplate(
+            input_variables=["queries"],
+            template="""Predict areas of interest to user based on user queries.
+                     user queries: {queries}
+                     """,
+        )
+
+        chain = prompt | llm | StrOutputParser()
+        response = chain.invoke({"queries": str(user_data)})
+
+        return str(response)
+
+    @app.route('/chat', methods=['GET'])
     def ask():
         query = request.args["query"]
-        docs = search_docs(query)
 
+        user_data.append(query)
+
+        docs = search_docs(query)
         answer = gpt_answer(query, docs)
 
         return str(answer)
+
 
     def search_docs(query):
         return vector_store.similarity_search(query, 3)
@@ -46,7 +66,7 @@ def create_app():
             else:
                 return "no Result for you"
 
-    def check_relevance(query, doc, is_test = False, is_web_search = False):
+    def check_relevance(query, doc, is_test=False, is_web_search=False):
         prompt = PromptTemplate(
             input_variables=["query", "document"],
             template="""You must judge strictly. 
@@ -62,13 +82,13 @@ def create_app():
         chain = prompt | llm | JsonOutputParser()
         response = chain.invoke({"document": doc, "query": query})
 
-        print("is_test: "+str(is_test)+"  "+str(response))
+        print("is_test: " + str(is_test) + "  " + str(response))
 
         if is_test:
             return "true" in str(response).lower()
 
         if "true" in str(response).lower():
-            return check_test_relevance(query, doc, is_web_search= is_web_search)
+            return check_test_relevance(query, doc, is_web_search=is_web_search)
         else:
             if is_web_search is False:
                 return web_search(query)
@@ -118,7 +138,7 @@ def create_app():
         web_search_tool = TavilySearchResults(k=3)
         search_result = web_search_tool.invoke({"query": query})[0: 2]
         print("use web search")
-        return check_relevance(query, search_result, is_web_search= True)
+        return check_relevance(query, search_result, is_web_search=True)
 
     return app
 
@@ -144,5 +164,5 @@ def make_docs_by_chunk_data(data):
 
 def make_vector_store(docs):
     vector_store = Chroma.from_documents(documents=docs, embedding=OpenAIEmbeddings(),
-                                         persist_directory="./chroma_db", collection_name="lilianweng")
+                                         persist_directory="./chroma_db", collection_name="llm")
     return vector_store
