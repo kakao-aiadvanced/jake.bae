@@ -32,10 +32,12 @@ def create_app():
         (doc, retry_count) = check_relevance_and_retry(state, retry_count)
 
         if doc is None:
-            return web_search(query)
+            search_content = web_search(query)
+            return make_answer(query, search_content, False)
 
         if check_test_relevance("I like an apple", doc) is False:
-            return web_search(query)
+            search_content = web_search(query)
+            return make_answer(query, search_content, False)
 
         answer = make_answer(query, doc)
 
@@ -115,7 +117,7 @@ def create_app():
 
     def web_search(query):
         web_search_tool = TavilySearchResults(k=1)
-        return web_search_tool.invoke({"query": query})
+        return web_search_tool.invoke({"query": query})[0]
 
     return app
 
